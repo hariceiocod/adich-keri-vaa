@@ -252,7 +252,21 @@ function limitNeck(){
   if(Math.abs(rel)<=NECK_MAX) return;
   const want=ta+Math.sign(rel)*NECK_MAX-Math.PI/2, L=Math.hypot(h.x-n.x,h.y-n.y);
   const nx=n.x+Math.cos(want)*L, ny=n.y+Math.sin(want)*L;
-  h.ox+=nx-h.x; h.oy+=ny-h.y; h.x=nx; h.y=ny; // move without adding velocity
+  h.x+=(nx-h.x)*0.5; h.y+=(ny-h.y)*0.5; // soft correction, removes energy instead of adding it
+}
+let tangleT=0;
+function fixTangle(){
+  let worst=0;
+  for(const c of K){ if(c.a>6||c.b>6||c.a===0||c.min) continue; const a=P[c.a],b=P[c.b]; worst=Math.max(worst,Math.abs(Math.hypot(b.x-a.x,b.y-a.y)-c.len)); }
+  tangleT = worst>4*u ? tangleT+1 : 0;
+  if(tangleT<8) return; tangleT=0;
+  const T=[1,2,3,4,5,6]; let cx=0,cy=0,vx=0,vy=0;
+  for(const i of T){ cx+=P[i].x; cy+=P[i].y; vx+=P[i].x-P[i].ox; vy+=P[i].y-P[i].oy; } cx/=6; cy/=6; vx/=6; vy/=6;
+  let dx0=0,dy0=0; for(const i of T){ dx0+=DEF[i][0]; dy0+=DEF[i][1]; } dx0/=6; dy0/=6;
+  const ang=Math.atan2(P[4].y-P[1].y,P[4].x-P[1].x)-Math.atan2(DEF[4][1]-DEF[1][1],DEF[4][0]-DEF[1][0]);
+  const c=Math.cos(ang), sn=Math.sin(ang);
+  for(const i of T){ const lx=(DEF[i][0]-dx0)*u, ly=(DEF[i][1]-dy0)*u;
+    P[i].x=cx+lx*c-ly*sn; P[i].y=cy+lx*sn+ly*c; P[i].ox=P[i].x-vx*0.5; P[i].oy=P[i].y-vy*0.5; }
 }
 function torsoAng(){ return Math.atan2(P[4].y-P[1].y,P[4].x-P[1].x)-Math.PI/2; }
 function headAng(){ return Math.atan2(P[0].y-P[1].y,P[0].x-P[1].x)+Math.PI/2; }
@@ -302,7 +316,7 @@ function crunch(){ if(time-lastCrunch<1.2) return false; lastCrunch=time; play('
 
 /* ---------- NPC brain: falls limp when hit, then keeps trying to stand ---------- */
 const STIFF=[.032,.03,.03,.03,.026,.024,.024,.012,.009,.012,.009,.02,.022,.02,.022];
-const ai={m:1,knock:0,fail:2,tries:0,walk:0,stepL:0,stepR:0,anchor:0,crouch:0,guard:0,flail:0,lean:0,wobble:0,dazed:0};
+const ai={E:0,restless:0,tumble:0,anchorS:null,m:1,knock:0,fail:2,tries:0,walk:0,stepL:0,stepR:0,anchor:0,crouch:0,guard:0,flail:0,lean:0,wobble:0,dazed:0};
 const GETUP=['Is that all?','Not the face!','Ow…','I\'m fine!','Again?!','Ugh…'];
 function brain(dt){
   ai.crouch=Math.max(0,ai.crouch-dt*0.55); ai.flail=Math.max(0,ai.flail-dt*0.9); ai.guard=Math.max(0,ai.guard-dt*0.3);
@@ -314,6 +328,8 @@ function brain(dt){
     if(ai.knock<=0){ ai.knock=0; ai.tries++; ai.fail=(ai.tries<3&&Math.random()<0.4)?0.3+Math.random()*0.35:2; }
   } else if(ai.m<1){
     const was=ai.m;
+    const onFloor=P[4].y>floorY-60*u, still=ai.E<1.6*u;
+    if(ai.m<0.15&&!(onFloor&&still)) return;          // still tumbling or in the air: wait until it settles
     ai.m=Math.min(1,ai.m+dt*(ai.m<0.45?0.5:0.9));
     if(ai.m>ai.fail){ ai.fail=2; ai.knock=0.35+Math.random()*0.3; ai.m*=0.3; } // legs give out, tries again
     if(was<1&&ai.m>=1){ if(ai.tries>0&&Math.random()<0.45){ const h=P[0]; fx.push({type:'say',t:GETUP[Math.floor(Math.random()*GETUP.length)],x:h.x,y:h.y,life:1.6}); } if(ai.tries>0){ ai.dazed=2.5; dmg.v=0; ai.guard=0.8; } ai.tries=0; }
@@ -337,11 +353,18 @@ function knockDown(kind,dir){
 /* ---------- physics ---------- */
 function step(){
   const g=0.55*u, dt=1/60;
+  let sp=0; for(const p of P) sp+=Math.hypot(p.x-p.ox,p.y-p.oy); ai.E=sp/P.length;
+  if(!grabbed&&ai.m>0.5&&time-lastHit>1&&ai.E>3.5*u){ ai.restless+=dt; if(ai.restless>1.5){ ai.restless=0; ai.m=0; ai.knock=0.6; } } else ai.restless=0;
+  // a limp body that keeps cartwheeling on its own: bleed the energy off so it settles
+  if(!grabbed&&ai.m<0.3&&time-lastHit>0.8&&ai.E>1.2*u) ai.tumble+=dt; else ai.tumble=Math.max(0,ai.tumble-dt*2);
+  const drag=ai.tumble>1.2?0.9:(ai.m<0.3&&!grabbed?0.992:1);
   brain(dt);
   const grounded=P.some(p=>p.y>floorY-p.r-10*u);
   const m=grounded?ai.m:ai.m*0.2;           // can't push off thin air
   const feetX=(P[12].x+P[14].x)/2;
-  ai.anchor=P[4].x*0.6+feetX*0.4;
+  const rawA=P[4].x*0.6+feetX*0.4;
+  ai.anchorS=(ai.anchorS==null||ai.m<0.3)?rawA:ai.anchorS+(rawA-ai.anchorS)*0.08;
+  ai.anchor=ai.anchorS;
   // once steady on its feet, walk back to the middle of the room
   const off=W/2-ai.anchor, walking=ai.m>0.92&&!ai.knock&&Math.abs(off)>25*u;
   let lean=0, liftL=0, liftR=0;
@@ -370,6 +393,8 @@ function step(){
       vx+=(tx-p.x)*k; vy+=(ty-p.y)*k;
       const damp=1-0.11*m; vx*=damp; vy*=damp;
     }
+    vx*=drag; vy*=drag;
+    const vmax=38*u, vl=Math.hypot(vx,vy); if(vl>vmax){ vx*=vmax/vl; vy*=vmax/vl; }
     p.ox=p.x; p.oy=p.y; p.x+=vx; p.y+=vy+ay;
   }
   for(let it=0;it<12;it++){
@@ -390,7 +415,10 @@ function step(){
       if(p.x>W-p.r){ const vx=p.x-p.ox; p.x=W-p.r; p.ox=p.x+vx*0.5; }
     }
   }
-  if(grabbed){ const p=P[grabbed.i]; p.ox=p.x; p.oy=p.y; p.x=pointer.x; p.y=pointer.y; }
+  if(grabbed){ const p=P[grabbed.i]; p.ox=p.x; p.oy=p.y;
+    let dx=pointer.x-p.x, dy=pointer.y-p.y; const d=Math.hypot(dx,dy), mx=24*u; if(d>mx){ dx*=mx/d; dy*=mx/d; }
+    p.x+=dx; p.y+=dy; }
+  fixTangle();
   if(landV>4.5*u&&!grabbed){ // body or head slammed into the floor
     if(Math.random()<(landV>8*u?0.9:0.55)&&crunch()){ shake=Math.min(16,shake+8); fx.push({type:'text',t:'CRUNCH!',x:P[4].x,y:floorY-40*u,life:1,rot:(Math.random()-0.5)*0.4,big:true}); hurt(true); stress=Math.max(0,stress-2); updateMeter(); }
   }
@@ -1064,5 +1092,7 @@ resize(); requestAnimationFrame(frame);
 </script>
 
 <script>if('serviceWorker' in navigator) addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
+<script>window.va=window.va||function(){(window.vaq=window.vaq||[]).push(arguments);};</script>
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
