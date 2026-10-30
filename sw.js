@@ -1,5 +1,5 @@
 // Adich Keri Vaa! offline support
-const VERSION = 'akv-v1';
+const VERSION = 'akv-v2';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './privacy.html'];
 
 self.addEventListener('install', e => {
@@ -11,6 +11,9 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  // live data (leaderboard, visitor counting) always goes to the network
+  if (url.origin === location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/_vercel/'))) return;
   // Pages: try the network first so updates show up, fall back to the saved copy offline
   if (req.mode === 'navigate') {
     e.respondWith(fetch(req).then(res => { const copy = res.clone(); caches.open(VERSION).then(c => c.put('./index.html', copy)); return res; })
