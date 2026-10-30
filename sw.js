@@ -1,5 +1,5 @@
 // Adich Keri Vaa! offline support
-const VERSION = 'akv-v2';
+const VERSION = 'akv-v3';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './privacy.html'];
 
 self.addEventListener('install', e => {
